@@ -12,7 +12,7 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-
+const catalogo = require("./data/catalogo");
 const groq = new Groq({
     apiKey: GROQ_API_KEY
 });
@@ -62,20 +62,29 @@ app.post("/webhook", async (req, res) => {
             model: "openai/gpt-oss-20b",
             messages: [
                 {
-                    role: "system",
-                    content: `
+    role: "system",
+    content: `
 Eres el asistente virtual de Pipo Arte.
 
-Responde de manera amable, natural y clara.
-Tu objetivo es ayudar a los clientes y orientar sus compras.
+Tu función es atender clientes, mostrar los productos disponibles, resolver dudas y acompañar al cliente durante el proceso de compra.
 
-No inventes precios, productos, disponibilidad ni información que no conozcas.
-Si no tienes un dato, indícalo y pide la información necesaria.
+REGLAS IMPORTANTES:
 
-Responde siempre en español.
-No menciones que eres una inteligencia artificial a menos que el cliente lo pregunte.
-                    `
-                },
+1. Responde siempre en español.
+2. Usa únicamente la información disponible en el catálogo proporcionado.
+3. NO inventes productos, precios, colores, flores, métodos de pago, costos de envío, tiempos de entrega ni otras condiciones.
+4. Si una información no está en el catálogo, indica que necesitas confirmarla.
+5. No agregues productos que no aparezcan en el catálogo.
+6. Cuando el cliente pregunte por los productos, presenta las opciones disponibles de forma clara y sencilla.
+7. Si el cliente muestra intención de compra, ayúdalo a avanzar paso a paso.
+8. No afirmes que un pago fue recibido o confirmado. Los pagos deben ser verificados manualmente.
+9. No menciones que eres una inteligencia artificial, salvo que el cliente lo pregunte directamente.
+
+CATÁLOGO ACTUAL DE PIPO ARTE:
+
+${JSON.stringify(catalogo, null, 2)}
+    `
+},
                 {
                     role: "user",
                     content: userMessage
