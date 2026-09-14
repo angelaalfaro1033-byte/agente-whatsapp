@@ -19,7 +19,21 @@ const groq = new Groq({
 
 const catalogo = require("./data/catalogo");
 
-// Memoria temporal de las conversaciones
+
+// =====================================================
+// DATOS DE PAGO DE PIPO ARTE
+// =====================================================
+
+const DATOS_PAGO = {
+    nequi: "3223032562",
+    davivienda: "@Davi3223032562"
+};
+
+
+// =====================================================
+// MEMORIA TEMPORAL DE CONVERSACIONES
+// =====================================================
+
 const sesiones = new Map();
 
 
@@ -56,89 +70,179 @@ async function enviarWhatsApp(numero, mensaje) {
     const data = await response.json();
 
     console.log("Respuesta de WhatsApp:");
-
     console.log(JSON.stringify(data, null, 2));
+
+    if (!response.ok) {
+        throw new Error(
+            `Error de WhatsApp: ${JSON.stringify(data)}`
+        );
+    }
 
     return data;
 }
 
 
 // =====================================================
-// DETECTAR INTENCIÓN DE PAGO
+// ANALIZAR INTENCIÓN Y ESTADO DEL PEDIDO
 // =====================================================
 
-function detectarIntencionPago(mensaje) {
+async function analizarEstadoPago(sesion) {
 
-    const texto = mensaje
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "");
+    const conversacion = sesion.mensajes
+        .slice(-15)
+        .map(mensaje => {
 
-    const frasesPago = [
-        "quiero pagar",
-        "voy a pagar",
-        "puedo pagar",
-        "como pago",
-        "como puedo pagar",
-        "donde pago",
-        "pasame los datos para pagar",
-        "pasame los datos de pago",
-        "datos para pagar",
-        "quiero hacer el pago",
-        "hacer el pago",
-        "listo para pagar",
-        "estoy listo para pagar",
-        "estoy lista para pagar",
-        "ya puedo pagar",
-        "quiero realizar el pago",
-        "realizar el pago"
-    ];
+            const rol =
+                mensaje.role === "user"
+                    ? "CLIENTE"
+                    : "PIPO ARTE";
 
-    return frasesPago.some(frase => texto.includes(frase));
+            return `${rol}: ${mensaje.content}`;
+
+        })
+        .join("\n\n");
+
+
+    const prompt = `
+Analiza la conversación de compra de Pipo Arte que aparece a continuación.
+
+Tu tarea es determinar si el cliente ha llegado al punto en el que quiere realizar el pago.
+
+NO debes buscar palabras específicas.
+
+Debes interpretar el significado y el contexto de la conversación.
+
+Por ejemplo, pueden existir muchas formas diferentes de expresar una intención de pago:
+
+- El cliente puede decir que quiere pagar.
+- Puede preguntar dónde hacer la transferencia.
+- Puede escoger uno de los métodos de pago.
+- Puede pedir los datos para realizar el pago.
+- Puede indicar que ya está haciendo la transferencia.
+- Puede decir algo corto como "listo", "dale", "perfecto", etc., si el contexto demuestra que está respondiendo a una solicitud relacionada con el pago.
+
+También debes distinguir entre:
+
+A) El cliente simplemente está preguntando información sobre productos.
+
+B) El cliente todavía está completando su pedido.
+
+C) El pedido ya fue confirmado y el cliente está entrando en la etapa de pago.
+
+D) El cliente afirma que YA realizó el pago.
+
+IMPORTANTE:
+
+- "listo_para_pagar" debe ser true solamente cuando el contexto indique que el cliente está dispuesto a realizar el pago o necesita los datos para hacerlo.
+- Si el cliente solamente confirmó que los datos del pedido son correctos y todavía no se ha hablado del pago, no necesariamente significa que ya esté intentando pagar.
+- Si el cliente dice que ya realizó el pago, también debe considerarse que llegó a la etapa de pago, pero el pago NO debe considerarse confirmado.
+- Nunca determines que un pago está confirmado solamente porque el cliente lo afirma.
+
+Responde ÚNICAMENTE con JSON válido, sin Markdown:
+
+{
+  "pedido_confirmado": true o false,
+  "listo_para_pagar": true o false,
+  "pago_reportado_por_cliente": true o false,
+  "explicacion": "explicación muy breve"
+}
+
+CONVERSACIÓN:
+
+${conversacion}
+`;
+
+
+    try {
+
+        const completion =
+            await groq.chat.completions.create({
+
+                model: "openai/gpt-oss-20b",
+
+                messages: [
+                    {
+                        role: "system",
+                        content: prompt
+                    }
+                ],
+
+                temperature: 0,
+
+                max_tokens: 200,
+
+                response_format: {
+                    type: "json_object"
+                }
+
+            });
+
+
+        const contenido =
+            completion.choices[0]?.message?.content || "{}";
+
+
+        console.log(
+            "Análisis de estado de pago:"
+        );
+
+        console.log(contenido);
+
+
+        const resultado =
+            JSON.parse(contenido);
+
+
+        return {
+
+            pedido_confirmado:
+                resultado.pedido_confirmado === true,
+
+            listo_para_pagar:
+                resultado.listo_para_pagar === true,
+
+            pago_reportado_por_cliente:
+                resultado.pago_reportado_por_cliente === true,
+
+            explicacion:
+                resultado.explicacion || ""
+
+        };
+
+
+    } catch (error) {
+
+        console.error(
+            "Error analizando intención de pago:",
+            error
+        );
+
+
+        return {
+
+            pedido_confirmado: false,
+
+            listo_para_pagar: false,
+
+            pago_reportado_por_cliente: false,
+
+            explicacion: ""
+
+        };
+
+    }
+
 }
 
 
 // =====================================================
-// COMPROBAR SI EL PEDIDO ESTÁ SUFICIENTEMENTE AVANZADO
+// CREAR NOTIFICACIÓN PARA ANGELA
 // =====================================================
 
-function pedidoEstaListoParaPago(sesion) {
+function crearNotificacionPago(sesion, estadoPago) {
 
-    const mensajes = sesion.mensajes;
-
-    const conversacion = mensajes
-        .map(mensaje => mensaje.content)
-        .join(" ")
-        .toLowerCase();
-
-    const tieneProducto =
-        conversacion.includes("matera");
-
-    const tieneDatosEntrega =
-        conversacion.includes("ciudad") ||
-        conversacion.includes("dirección") ||
-        conversacion.includes("direccion");
-
-    const tieneConfirmacion =
-        conversacion.includes("confirmo") ||
-        conversacion.includes("confirmado") ||
-        conversacion.includes("todo está correcto") ||
-        conversacion.includes("todo esta correcto") ||
-        conversacion.includes("sí, está correcto") ||
-        conversacion.includes("si, esta correcto");
-
-    return tieneProducto && tieneDatosEntrega && tieneConfirmacion;
-}
-
-
-// =====================================================
-// CREAR RESUMEN PARA LA NOTIFICACIÓN
-// =====================================================
-
-function crearNotificacionPedido(sesion, mensajeCliente) {
-
-    const ultimosMensajes = sesion.mensajes
-        .slice(-12)
+    const conversacion = sesion.mensajes
+        .slice(-15)
         .map(mensaje => {
 
             const rol =
@@ -151,19 +255,31 @@ function crearNotificacionPedido(sesion, mensajeCliente) {
         })
         .join("\n\n");
 
-    return `🛍️ PEDIDO LISTO PARA PAGO
 
-El cliente indicó que está listo para realizar el pago.
+    let titulo =
+        "🛍️ PEDIDO LISTO PARA PAGO";
 
-Último mensaje:
-"${mensajeCliente}"
+
+    if (estadoPago.pago_reportado_por_cliente) {
+
+        titulo =
+            "💰 CLIENTE REPORTA QUE YA REALIZÓ EL PAGO";
+
+    }
+
+
+    return `${titulo}
+
+El sistema detectó que el cliente llegó a la etapa de pago.
+
+⚠️ El pago NO está confirmado automáticamente.
+Debe verificarse manualmente.
 
 Conversación reciente:
 
-${ultimosMensajes}
+${conversacion}
+`;
 
-⚠️ El pago todavía NO está confirmado.
-Debes verificarlo manualmente.`;
 }
 
 
@@ -179,21 +295,29 @@ app.get("/", (req, res) => {
 
 
 // =====================================================
-// VERIFICACIÓN DEL WEBHOOK
+// VERIFICACIÓN DEL WEBHOOK DE META
 // =====================================================
 
 app.get("/webhook", (req, res) => {
 
-    const mode = req.query["hub.mode"];
+    const mode =
+        req.query["hub.mode"];
 
-    const token = req.query["hub.verify_token"];
+    const token =
+        req.query["hub.verify_token"];
 
-    const challenge = req.query["hub.challenge"];
+    const challenge =
+        req.query["hub.challenge"];
 
 
-    if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    if (
+        mode === "subscribe" &&
+        token === VERIFY_TOKEN
+    ) {
 
-        return res.status(200).send(challenge);
+        return res
+            .status(200)
+            .send(challenge);
 
     }
 
@@ -222,7 +346,10 @@ app.post("/webhook", async (req, res) => {
             req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
 
-        // No hay mensaje
+        // -------------------------------------------------
+        // IGNORAR EVENTOS SIN MENSAJE
+        // -------------------------------------------------
+
         if (!message) {
 
             return res.sendStatus(200);
@@ -230,7 +357,10 @@ app.post("/webhook", async (req, res) => {
         }
 
 
-        // Por ahora solamente procesamos texto
+        // -------------------------------------------------
+        // POR AHORA SOLO TEXTO
+        // -------------------------------------------------
+
         if (message.type !== "text") {
 
             return res.sendStatus(200);
@@ -238,9 +368,11 @@ app.post("/webhook", async (req, res) => {
         }
 
 
-        const from = message.from;
+        const from =
+            message.from;
 
-        const userMessage = message.text.body;
+        const userMessage =
+            message.text.body;
 
 
         console.log(
@@ -296,7 +428,8 @@ app.post("/webhook", async (req, res) => {
         }
 
 
-        const sesion = sesiones.get(from);
+        const sesion =
+            sesiones.get(from);
 
 
         // =================================================
@@ -313,15 +446,17 @@ app.post("/webhook", async (req, res) => {
 
 
         // =================================================
-        // PREPARAR PROMPT
+        // PROMPT PRINCIPAL DEL AGENTE
         // =================================================
 
         const systemPrompt = `
 Eres el asistente virtual de Pipo Arte.
 
-Tu función es atender clientes y acompañarlos durante el proceso de compra.
+Tu función es atender clientes y acompañarlos durante todo el proceso de compra.
 
-REGLAS IMPORTANTES:
+=====================================================
+REGLAS GENERALES
+=====================================================
 
 1. Responde siempre en español.
 
@@ -329,11 +464,11 @@ REGLAS IMPORTANTES:
 
 3. NO inventes productos, precios, colores, flores, métodos de pago, costos de envío, tiempos de entrega ni otras condiciones.
 
-4. Si una información no está disponible en el catálogo, indica que necesitas confirmarla.
+4. Si una información no está disponible, indica que necesita ser confirmada.
 
 5. No incluyas las clases de Pipo Arte. Este flujo solamente gestiona productos y compras.
 
-6. No afirmes que un pago fue recibido, confirmado o aprobado.
+6. No afirmes nunca que un pago fue recibido, confirmado o aprobado.
 
 7. Sé amable, natural y clara.
 
@@ -343,7 +478,7 @@ REGLAS IMPORTANTES:
 
 10. No vuelvas a preguntar información que el cliente ya proporcionó.
 
-11. No menciones que eres una inteligencia artificial, salvo que el cliente lo pregunte.
+11. No menciones que eres una inteligencia artificial salvo que el cliente lo pregunte directamente.
 
 12. No inventes información para completar datos faltantes.
 
@@ -352,7 +487,7 @@ REGLAS IMPORTANTES:
 14. Si el cliente selecciona un producto, conserva esa selección durante la conversación.
 
 15. El objetivo es ayudar al cliente a completar una compra.
-
+16. Nunca utilices tablas Markdown. En WhatsApp, presenta los productos como una lista limpia, utilizando saltos de línea y negrita para facilitar la lectura.
 =====================================================
 CATÁLOGO DE PIPO ARTE
 =====================================================
@@ -390,7 +525,7 @@ Cuando seleccione una matera:
 - Confirma cuál eligió.
 - Pregunta cómo desea personalizarla.
 
-Opciones:
+Las opciones son:
 
 1. Utilizar su propio enlace.
 2. Utilizar una plantilla de Pipo Arte.
@@ -426,20 +561,22 @@ Cuando tengas producto y personalización:
 
 - Resume el pedido.
 - Indica el valor.
-- Pregunta si desea confirmar.
+- Pregunta si todo está correcto.
 
 PASO 8 — DATOS DE ENTREGA
 
-Después de confirmar:
+Después de que el cliente confirme:
+
+Solicita:
 
 - Nombre del destinatario.
 - Teléfono.
 - Ciudad.
 - Dirección.
 
-PASO 9 — RESUMEN
+PASO 9 — RESUMEN FINAL
 
-Cuando los datos estén completos:
+Cuando los datos de entrega estén completos:
 
 - Resume producto.
 - Personalización.
@@ -449,18 +586,48 @@ Cuando los datos estén completos:
 
 PASO 10 — PAGO
 
-Cuando el pedido esté confirmado y el cliente indique que está listo para pagar:
+Cuando el cliente llegue a la etapa de pago:
 
-- Muestra únicamente los métodos de pago del catálogo.
-- No afirmes que el pago fue recibido.
-- El pago será verificado manualmente.
+Los datos de pago de Pipo Arte son:
+
+Nequi:
+${DATOS_PAGO.nequi}
+
+Davivienda:
+${DATOS_PAGO.davivienda}
+
+IMPORTANTE:
+
+- Estos son los datos de Pipo Arte.
+- El cliente NO debe proporcionar su propio número de Nequi.
+- El cliente NO debe proporcionar su propio número de cuenta para recibir el pago.
+- Nunca preguntes al cliente cuál es su número de Nequi para realizar el pago.
+- Nunca preguntes al cliente cuál es su número de cuenta para realizar el pago.
+- Debes proporcionar directamente los datos de Pipo Arte cuando corresponda.
+
+Puedes indicar que el cliente debe realizar el pago utilizando uno de esos medios.
+
+Después de realizar el pago, puede enviar el comprobante por este mismo medio para que sea verificado manualmente.
+
+NUNCA afirmes que el pago fue recibido solamente porque el cliente diga que pagó.
+
+=====================================================
+MÉTODOS DE PAGO
+=====================================================
+
+Los únicos métodos de pago disponibles son:
+
+- Nequi
+- Davivienda
+
+No cambies ni inventes otros métodos de pago.
 
 =====================================================
 `;
 
 
         // =================================================
-        // GROQ
+        // RESPUESTA NORMAL DE GROQ
         // =================================================
 
         const completion =
@@ -488,7 +655,7 @@ Cuando el pedido esté confirmado y el cliente indique que está listo para paga
             });
 
 
-        const aiResponse =
+        let aiResponse =
             completion.choices[0]?.message?.content ||
             "Gracias por escribir a Pipo Arte. ¿En qué podemos ayudarte?";
 
@@ -498,6 +665,170 @@ Cuando el pedido esté confirmado y el cliente indique que está listo para paga
         );
 
         console.log(aiResponse);
+
+
+        // =================================================
+        // ANALIZAR CONTEXTO DE PAGO
+        // =================================================
+
+        const estadoPago =
+            await analizarEstadoPago(sesion);
+
+
+        console.log(
+            "Estado de pago detectado:"
+        );
+
+        console.log(
+            JSON.stringify(
+                estadoPago,
+                null,
+                2
+            )
+        );
+
+
+        // =================================================
+        // SI ESTÁ LISTO PARA PAGAR
+        // =================================================
+
+        if (
+            estadoPago.listo_para_pagar
+        ) {
+
+            sesion.pedido.estado_pedido =
+                "PENDIENTE_PAGO";
+
+
+            // ---------------------------------------------
+            // FORZAR LOS DATOS CORRECTOS DE PAGO
+            // ---------------------------------------------
+
+            aiResponse = `Perfecto. Puedes realizar el pago por cualquiera de estos medios:
+
+*Nequi:* ${DATOS_PAGO.nequi}
+
+*Davivienda:* ${DATOS_PAGO.davivienda}
+
+Cuando realices el pago, puedes enviarnos el comprobante por este mismo medio para verificarlo manualmente.
+
+Tu pago quedará pendiente de verificación hasta que lo revisemos.`;
+
+
+            // ---------------------------------------------
+            // NOTIFICAR A ANGELA UNA SOLA VEZ
+            // ---------------------------------------------
+
+            if (!sesion.notificadoPago) {
+
+                if (!ADMIN_WHATSAPP_NUMBER) {
+
+                    console.error(
+                        "ADMIN_WHATSAPP_NUMBER no está configurado en Render."
+                    );
+
+                } else {
+
+                    try {
+
+                        const notificacion =
+                            crearNotificacionPago(
+                                sesion,
+                                estadoPago
+                            );
+
+
+                        await enviarWhatsApp(
+                            ADMIN_WHATSAPP_NUMBER,
+                            notificacion
+                        );
+
+
+                        sesion.notificadoPago =
+                            true;
+
+
+                        console.log(
+                            "Notificación de pago enviada correctamente."
+                        );
+
+
+                    } catch (error) {
+
+                        console.error(
+                            "Error enviando notificación:",
+                            error
+                        );
+
+                    }
+
+                }
+
+            }
+
+        }
+
+
+        // =================================================
+        // SI EL CLIENTE DICE QUE YA PAGÓ
+        // =================================================
+
+        if (
+            estadoPago.pago_reportado_por_cliente
+        ) {
+
+            sesion.pedido.estado_pedido =
+                "PAGO_POR_VERIFICAR";
+
+
+            aiResponse = `Gracias. Hemos recibido tu mensaje.
+
+El pago todavía debe ser verificado manualmente.
+
+Puedes enviarnos el comprobante de pago por este mismo medio y lo revisaremos.`;
+
+
+            // ---------------------------------------------
+            // NOTIFICAR A ANGELA
+            // ---------------------------------------------
+
+            if (!sesion.notificadoPago) {
+
+                if (ADMIN_WHATSAPP_NUMBER) {
+
+                    try {
+
+                        const notificacion =
+                            crearNotificacionPago(
+                                sesion,
+                                estadoPago
+                            );
+
+
+                        await enviarWhatsApp(
+                            ADMIN_WHATSAPP_NUMBER,
+                            notificacion
+                        );
+
+
+                        sesion.notificadoPago =
+                            true;
+
+
+                    } catch (error) {
+
+                        console.error(
+                            "Error enviando notificación de pago:",
+                            error
+                        );
+
+                    }
+
+                }
+
+            }
+
+        }
 
 
         // =================================================
@@ -511,91 +842,6 @@ Cuando el pedido esté confirmado y el cliente indique que está listo para paga
             content: aiResponse
 
         });
-
-
-        // =================================================
-        // DETECTAR SI ESTÁ LISTO PARA PAGAR
-        // =================================================
-
-        const quierePagar =
-            detectarIntencionPago(userMessage);
-
-        const pedidoListo =
-            pedidoEstaListoParaPago(sesion);
-
-
-        console.log(
-            "¿Intención de pago?:",
-            quierePagar
-        );
-
-        console.log(
-            "¿Pedido listo?:",
-            pedidoListo
-        );
-
-
-        // =================================================
-        // NOTIFICAR AL ADMINISTRADOR
-        // =================================================
-
-        if (
-            quierePagar &&
-            pedidoListo &&
-            !sesion.notificadoPago
-        ) {
-
-            console.log(
-                "Cliente listo para pagar. Enviando notificación..."
-            );
-
-
-            if (!ADMIN_WHATSAPP_NUMBER) {
-
-                console.error(
-                    "ERROR: ADMIN_WHATSAPP_NUMBER no está configurado."
-                );
-
-            } else {
-
-                const notificacion =
-                    crearNotificacionPedido(
-                        sesion,
-                        userMessage
-                    );
-
-
-                try {
-
-                    await enviarWhatsApp(
-                        ADMIN_WHATSAPP_NUMBER,
-                        notificacion
-                    );
-
-
-                    sesion.notificadoPago = true;
-
-                    sesion.pedido.estado_pedido =
-                        "PENDIENTE_PAGO";
-
-
-                    console.log(
-                        "Notificación de pago enviada correctamente."
-                    );
-
-
-                } catch (error) {
-
-                    console.error(
-                        "Error enviando notificación de pago:",
-                        error
-                    );
-
-                }
-
-            }
-
-        }
 
 
         // =================================================
